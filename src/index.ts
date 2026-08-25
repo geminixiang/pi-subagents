@@ -12,14 +12,15 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getSettingsListTheme, ModelSelectorComponent } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, type SettingItem, SettingsList, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { abortable } from "./abortable.js";
 import { hasAgentBadge, renderAgentName } from "./agent-color.js";
 import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "./agent-file-toggle.js";
 import { AgentManager, isTopLevelAgent } from "./agent-manager.js";
-import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
+import { getAgentConversation, getDefaultMaxTurns, getDefaultSubagentModel, getGraceTurns, getRememberAgents, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setDefaultSubagentModel, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getConfig, getFallbackSubagent, isDefaultsDisabled, NO_FALLBACK, registerAgents, resolveSpawnType, resolveType, setDefaultsDisabled, setFallbackSubagent } from "./agent-types.js";
 import { inChildSessionContext } from "./child-context.js";
 import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
@@ -34,7 +35,7 @@ import { getMaxSubagentDepth, setMaxSubagentDepth } from "./nested-tools.js";
 import { createOutputFilePath, ensureOutputFile, getOutputTranscriptDefault, sessionTaskDir, setOutputTranscriptDefault, streamToOutputFile, writeInitialEntry } from "./output-file.js";
 import { SubagentScheduler } from "./schedule.js";
 import { resolveStorePath, ScheduleStore } from "./schedule-store.js";
-import { applyAndEmitLoaded, loadSettings, type SubagentsSettings, saveAndEmitChanged, type ToolDescriptionMode } from "./settings.js";
+import { applyAndEmitLoaded, loadSettings, type SubagentsSettings, saveAndEmitChanged, saveGlobalDefaultModel, type ToolDescriptionMode } from "./settings.js";
 import { getForegroundOutcomeNote, getStatusNote, partialOutputSuffix } from "./status-note.js";
 import { type AgentConfig, type AgentInvocation, type AgentMentionMode, type AgentRecord, type JoinMode, type NotificationDetails, type SubagentType, type ViewerMarkdownMode, type WidgetMode } from "./types.js";
 import { createMentionProvider, mentionRoster, type TypeInfo } from "./ui/agent-mention.js";
@@ -1402,6 +1403,7 @@ export default function (pi: ExtensionAPI) {
   // to stderr and falls back to defaults.
   applyAndEmitLoaded(
     {
+      setDefaultModel: setDefaultSubagentModel,
       setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
       setMaxConcurrentForeground: (n) => manager.setMaxConcurrentForeground(n),
       setDefaultMaxTurns,
@@ -3437,6 +3439,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
    */
   function snapshotSettings() {
     return {
+      defaultModel: getDefaultSubagentModel(),
       maxConcurrent: manager.getMaxConcurrent(),
       // 0 = unlimited, and the default — see SubagentsSettings.
       maxConcurrentForeground: manager.getMaxConcurrentForeground(),
@@ -3964,6 +3967,50 @@ Write the file using the write tool. Only write the file, nothing else.`;
     );
     ctx.ui.notify(message, level);
   }
+
+  pi.registerCommand("subagent", {
+    description: "Select the default provider/model for unqualified subagent spawns",
+    handler: async (_args, ctx) => {
+      const configured = getDefaultSubagentModel();
+      const resolved = configured ? resolveModel(configured, ctx.modelRegistry as ModelRegistry) : undefined;
+      const currentModel = resolved && typeof resolved !== "string" ? resolved as Model<Api> : undefined;
+      const runtime = (ctx.modelRegistry as unknown as {
+        runtime: ConstructorParameters<typeof ModelSelectorComponent>[3];
+      }).runtime;
+      const settingsProxy = {
+        setDefaultModelAndProvider: () => undefined,
+      } as unknown as ConstructorParameters<typeof ModelSelectorComponent>[2];
+      const Selector = ModelSelectorComponent as unknown as {
+        new (...args: unknown[]): ModelSelectorComponent;
+      };
+
+      const selected = await ctx.ui.custom<Model<Api> | undefined>((tui, _theme, _keybindings, done) => {
+        const onSelect = (model: Model<Api>) => done(model);
+        const onCancel = () => done(undefined);
+        // pi 0.84 accepts (tui, current, settings, runtime, scoped, select, cancel, search).
+        // Newer pi drops settings and adds default-selection arguments at the end.
+        return ModelSelectorComponent.length >= 9
+          ? new Selector(
+              tui, currentModel, runtime, ctx.scopedModels, onSelect, onCancel,
+              undefined, undefined,
+              currentModel ? { provider: currentModel.provider, id: currentModel.id } : undefined,
+            )
+          : new Selector(
+              tui, currentModel, settingsProxy, runtime, ctx.scopedModels, onSelect, onCancel,
+              undefined,
+            );
+      });
+
+      if (!selected) return;
+      const value = `${selected.provider}/${selected.id}`;
+      setDefaultSubagentModel(value);
+      const persisted = saveGlobalDefaultModel(value);
+      ctx.ui.notify(
+        persisted ? `Default subagent model: ${value}` : `Default subagent model: ${value} (session only; failed to persist)`,
+        persisted ? "info" : "warning",
+      );
+    },
+  });
 
   pi.registerCommand("agents", {
     description: "Manage agents",

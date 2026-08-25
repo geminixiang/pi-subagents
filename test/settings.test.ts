@@ -9,6 +9,7 @@ import {
   persistToastFor,
   type SettingsAppliers,
   saveAndEmitChanged,
+  saveGlobalDefaultModel,
   saveSettings,
 } from "../src/settings.js";
 
@@ -532,6 +533,7 @@ describe("settings persistence", () => {
 
     beforeEach(() => {
       appliers = {
+        setDefaultModel: vi.fn(),
         setMaxConcurrent: vi.fn(),
         setMaxConcurrentForeground: vi.fn(),
         setDefaultMaxTurns: vi.fn(),
@@ -783,6 +785,7 @@ describe("settings persistence", () => {
 
     beforeEach(() => {
       appliers = {
+        setDefaultModel: vi.fn(),
         setMaxConcurrent: vi.fn(),
         setMaxConcurrentForeground: vi.fn(),
         setDefaultMaxTurns: vi.fn(),
@@ -840,6 +843,19 @@ describe("settings persistence", () => {
       expect(appliers.setDefaultMaxTurns).not.toHaveBeenCalled();
       expect(appliers.setGraceTurns).not.toHaveBeenCalled();
       expect(appliers.setDefaultJoinMode).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("saveGlobalDefaultModel", () => {
+    it("merges the selected model into the global settings file", () => {
+      writeFileSync(globalFile(), JSON.stringify({ maxConcurrent: 8 }));
+
+      expect(saveGlobalDefaultModel("agent-model/gpt-5.6-sol")).toBe(true);
+      expect(JSON.parse(readFileSync(globalFile(), "utf-8"))).toEqual({
+        maxConcurrent: 8,
+        defaultModel: "agent-model/gpt-5.6-sol",
+      });
+      expect(loadSettings(projectDir).defaultModel).toBe("agent-model/gpt-5.6-sol");
     });
   });
 

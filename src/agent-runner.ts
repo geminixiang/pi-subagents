@@ -349,6 +349,14 @@ export function getRememberAgents(): boolean { return rememberAgents; }
 /** Set whether subagent sessions are persisted by default. */
 export function setRememberAgents(b: boolean): void { rememberAgents = b; }
 
+/** Default model for unqualified subagent spawns. Undefined inherits the parent model. */
+let defaultSubagentModel: string | undefined;
+
+export function getDefaultSubagentModel(): string | undefined { return defaultSubagentModel; }
+export function setDefaultSubagentModel(model: string | undefined): void {
+  defaultSubagentModel = model?.trim() || undefined;
+}
+
 /** Additional turns allowed after the soft limit steer message. */
 let graceTurns = 5;
 
@@ -359,18 +367,19 @@ export function setGraceTurns(n: number): void { graceTurns = Math.max(1, n); }
 
 /**
  * Try to find the right model for an agent type.
- * Priority: explicit option > config.model > parent model.
+ * Priority: explicit option (handled by caller) > config.model > saved default > parent model.
  */
 export function resolveDefaultModel(
   parentModel: Model<any> | undefined,
   registry: { find(provider: string, modelId: string): Model<any> | undefined; getAvailable?(): Model<any>[] },
   configModel?: string,
 ): Model<any> | undefined {
-  if (configModel) {
-    const slashIdx = configModel.indexOf("/");
+  const configuredModel = configModel ?? defaultSubagentModel;
+  if (configuredModel) {
+    const slashIdx = configuredModel.indexOf("/");
     if (slashIdx !== -1) {
-      const provider = configModel.slice(0, slashIdx);
-      const modelId = configModel.slice(slashIdx + 1);
+      const provider = configuredModel.slice(0, slashIdx);
+      const modelId = configuredModel.slice(slashIdx + 1);
 
       // Build a set of available model keys for fast lookup
       const available = registry.getAvailable?.();
@@ -828,7 +837,7 @@ export async function runAgent(
     }
   }
 
-  // Resolve model: explicit option > config.model > parent model
+  // Resolve model: explicit option > config.model > saved default > parent model
   const model = options.model ?? resolveDefaultModel(
     ctx.model, ctx.modelRegistry, agentConfig?.model,
   );

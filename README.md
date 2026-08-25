@@ -482,6 +482,7 @@ Send a steering message to a running agent. The message interrupts after the cur
 
 | Command | Description |
 |---------|-------------|
+| `/subagent` | Select the default provider/model for subagents using pi's `/model` picker |
 | `/agents` | Interactive agent management menu — agent types, running agents, scheduled jobs, workflow runs, settings |
 
 `/agents → Workflows` (shown only when [workflows](#persistent-settings) are on) opens a framed two-pane inspector over a run, with two levels of depth:
@@ -610,9 +611,11 @@ When on, each subagent spawn's effective model is validated against pi's own `en
 
 ## Persistent Settings
 
+Run `/subagent` to choose a machine-wide default provider/model using the same searchable picker as pi's `/model` command. The choice is written to `~/.pi/agent/subagents.json` as `defaultModel`; an agent file's `model:` frontmatter remains authoritative, followed by an explicit `model` in an `Agent` call, then this saved default, then the parent session's model.
+
 Runtime tuning values set via `/agents` → Settings (max concurrency, max foreground concurrency, default max turns, grace turns, nested depth, fallback agent, default join mode, scheduling on/off, scope models on/off, disable defaults on/off, strict agent files on/off, agent mentions on/off, output transcript on/off, tool description full/compact/custom, widget all/background/off, usage reporting on/off, cost display on/off, model display on/off, viewer markdown off/assistant/all) persist across pi restarts. Two files, merged on load:
 
-- **Global:** `~/.pi/agent/subagents.json` — your machine-wide defaults. Edit by hand; the `/agents` menu never writes here.
+- **Global:** `~/.pi/agent/subagents.json` — your machine-wide defaults. `/subagent` writes only `defaultModel`; other global settings are edited by hand, and `/agents` never writes here.
 - **Project:** `<cwd>/.pi/subagents.json` — per-project overrides. Written by `/agents` → Settings.
 
 **Precedence:** project overrides global on any field present in both. Missing fields fall back to the hardcoded defaults (max concurrency `10`, max foreground concurrency `0` = unlimited, default max turns unlimited, grace turns `5`, nested depth `2`, join mode `smart`, defaults enabled).

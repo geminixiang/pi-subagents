@@ -135,6 +135,7 @@ import {
   runAgent,
   SUBAGENT_TOOL_NAMES,
   setDefaultMaxTurns,
+  setDefaultSubagentModel,
   setGraceTurns,
   setRememberAgents,
 } from "../src/agent-runner.js";
@@ -2683,6 +2684,8 @@ describe("agent-runner abort signal forwarding", () => {
 // Exported for this (the file already exports normalizeMaxTurns/setGraceTurns
 // purely for test/agent-runner-settings.test.ts).
 describe("resolveDefaultModel", () => {
+  beforeEach(() => setDefaultSubagentModel(undefined));
+
   const parent = { provider: "anthropic", id: "parent-model" } as any;
   const haiku = { provider: "anthropic", id: "claude-haiku-4-5" } as any;
 
@@ -2724,6 +2727,16 @@ describe("resolveDefaultModel", () => {
     const r = registry([haiku]);
     expect(resolveDefaultModel(parent, r, "haiku")).toBe(parent);
     expect(r.find).not.toHaveBeenCalled();
+  });
+
+  it("uses the saved default when no agent model is configured", () => {
+    setDefaultSubagentModel("anthropic/claude-haiku-4-5");
+    expect(resolveDefaultModel(parent, registry([haiku]), undefined)).toEqual(haiku);
+  });
+
+  it("prefers an agent model over the saved default", () => {
+    setDefaultSubagentModel("openai/gpt-5");
+    expect(resolveDefaultModel(parent, registry([haiku]), "anthropic/claude-haiku-4-5")).toEqual(haiku);
   });
 
   it("returns the parent model when no model is configured", () => {
