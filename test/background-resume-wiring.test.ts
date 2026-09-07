@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { UICtx } from "../src/ui/agent-widget.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -55,7 +56,7 @@ function makePi() {
 function makeCtx(cwd: string) {
   return {
     hasUI: false,
-    ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+    ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn(), onTerminalInput: vi.fn(() => vi.fn()) },
     cwd,
     model: undefined,
     modelRegistry: { find: vi.fn(), getAvailable: vi.fn(() => []) },
@@ -262,6 +263,52 @@ describe("Agent tool — background resume wiring", () => {
     expect(text).toContain("steer_subagent");
 
     await lifecycle.get("session_shutdown")?.({}, ctx);
+  });
+
+  it.each([true, false])("wires text boundaries, tool status and turns through the manager (background=%s)", async background => {
+    writeFileSync(join(cwd, ".pi", "subagents.json"), JSON.stringify({ widgetMode: "all", schedulingEnabled: false, showModel: background ? undefined : false }));
+    const { pi, tools, lifecycle } = makePi();
+    subagentsExtension(pi);
+    const ctx = makeCtx(cwd);
+    ctx.hasUI = true;
+    let factory: Exclude<Parameters<UICtx["setWidget"]>[1], undefined> | undefined;
+    ctx.ui.setWidget.mockImplementation((key: string, content: Parameters<UICtx["setWidget"]>[1]) => {
+      if (key === "agents") factory = content;
+    });
+    // Show foreground agents too so the same assertion exercises both resumes.
+    session.model = { provider: "actual", id: "model" };
+    session.thinkingLevel = "high";
+    await lifecycle.get("session_start")({}, ctx);
+    await lifecycle.get("tool_execution_start")({}, ctx);
+    const id = await spawnSettled(tools, ctx);
+    let callbacks: Parameters<typeof resumeAgent>[2];
+    let finish: ((value: { text: string }) => void) | undefined;
+    vi.mocked(resumeAgent).mockImplementation((_session, _prompt, options) => {
+      callbacks = options;
+      return new Promise(resolve => { finish = resolve; });
+    });
+    const result = tools.get("Agent").execute("resume-call", {
+      prompt: "continue", description: "Continue", subagent_type: "general-purpose", resume: id, run_in_background: background,
+    }, undefined, undefined, ctx);
+    await vi.waitFor(() => expect(callbacks?.onTextStart).toBeTypeOf("function"));
+    if (background) await result;
+    callbacks!.onTextStart!();
+    callbacks!.onTextDelta!("Resuming", "Resuming");
+    callbacks!.onToolActivity!({ type: "start", toolCallId: "resumed-call", toolName: "grep", args: { pattern: "maxToolUses" } });
+    callbacks!.onToolActivity!({ type: "end", toolCallId: "resumed-call", toolName: "grep", isError: true });
+    callbacks!.onTurnEnd!(3);
+    await vi.waitFor(() => expect(factory).toBeTypeOf("function"));
+    const lines = factory!({ terminal: { columns: 160 }, requestRender: vi.fn() }, {
+      fg: (_color, text) => text, bold: text => text,
+    }).render().join("\n");
+    expect(lines).toContain("Resuming");
+    expect(lines).toContain("✗ Grep maxToolUses");
+    expect(lines).toContain("↻3");
+    if (background) expect(lines).toContain("actual/model:high");
+    else expect(lines).not.toContain("actual/model");
+    finish!({ text: "done" });
+    await result;
+    await lifecycle.get("session_shutdown")({}, ctx);
   });
 
   // Resume follows the same default as a fresh spawn — background — so

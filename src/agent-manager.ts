@@ -281,6 +281,7 @@ interface SpawnOptions {
   onQueued?: (id: string, ahead: number) => void;
   /** Called on tool start/end with activity info (for streaming progress to UI). */
   onToolActivity?: (activity: ToolActivity) => void;
+  onTextStart?: () => void;
   /** Called on streaming text deltas from the assistant response. */
   onTextDelta?: (delta: string, fullText: string) => void;
   /** Called when the agent session is created (for accessing session stats). */
@@ -314,6 +315,9 @@ interface ResumeOptions {
   isBackground?: boolean;
   /** Called on tool start/end with activity info (for streaming progress to UI). */
   onToolActivity?: (activity: ToolActivity) => void;
+  onTextStart?: () => void;
+  onTextDelta?: (delta: string, fullText: string) => void;
+  onTurnEnd?: (turnCount: number) => void;
   /** Called once per assistant message_end with that message's usage delta. */
   onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
   /** Called when the session successfully compacts. */
@@ -786,6 +790,7 @@ export class AgentManager {
         options.onToolActivity?.(activity);
       },
       onTurnEnd: options.onTurnEnd,
+      onTextStart: options.onTextStart,
       onTextDelta: options.onTextDelta,
       onAssistantUsage: (usage) => {
         addUsage(record.lifetimeUsage, usage);
@@ -1175,6 +1180,9 @@ export class AgentManager {
 
     try {
       const { text, failure } = await resumeAgent(record.session, prompt, {
+        onTextStart: options?.onTextStart,
+        onTextDelta: options?.onTextDelta,
+        onTurnEnd: options?.onTurnEnd,
         onToolActivity: (activity) => {
           if (activity.type === "end") record.toolUses++;
           options?.onToolActivity?.(activity);
@@ -1266,6 +1274,9 @@ export class AgentManager {
     };
 
     const promise = resumeAgent(record.session, prompt, {
+      onTextStart: options.onTextStart,
+      onTextDelta: options.onTextDelta,
+      onTurnEnd: options.onTurnEnd,
       onToolActivity: (activity) => {
         if (activity.type === "end") record.toolUses++;
         options.onToolActivity?.(activity);

@@ -398,9 +398,43 @@ export function resolveDefaultModel(
 }
 
 /** Info about a tool event in the subagent. */
-export interface ToolActivity {
-  type: "start" | "end";
-  toolName: string;
+export type ToolActivity =
+  | { type: "start"; toolName: string; toolCallId: string; args: unknown }
+  | { type: "end"; toolName: string; toolCallId: string; isError: boolean };
+
+/** The same public activity stream for fresh sessions and retained-session resumes. */
+function subscribeActivity(session: AgentSession, options: Pick<RunOptions,
+  "onToolActivity" | "onTextStart" | "onTextDelta" | "onTurnEnd" | "onAssistantUsage" | "onCompaction"
+>) {
+  let text = "";
+  let turns = 0;
+  return session.subscribe((event: AgentSessionEvent) => {
+    if (event.type === "turn_end") options.onTurnEnd?.(++turns);
+    if (event.type === "message_start" && event.message.role === "assistant") {
+      text = "";
+      options.onTextStart?.();
+    }
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      text += event.assistantMessageEvent.delta;
+      options.onTextDelta?.(event.assistantMessageEvent.delta, text);
+    }
+    if (event.type === "tool_execution_start") {
+      options.onToolActivity?.({ type: "start", toolName: event.toolName, toolCallId: event.toolCallId, args: event.args });
+    }
+    if (event.type === "tool_execution_end") {
+      options.onToolActivity?.({ type: "end", toolName: event.toolName, toolCallId: event.toolCallId, isError: event.isError });
+    }
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      const u = event.message.usage;
+      if (u) options.onAssistantUsage?.({
+        input: u.input ?? 0, output: u.output ?? 0, cacheWrite: u.cacheWrite ?? 0,
+        cacheRead: u.cacheRead ?? 0, cost: u.cost?.total ?? 0,
+      });
+    }
+    if (event.type === "compaction_end" && !event.aborted && event.result) {
+      options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
+    }
+  });
 }
 
 export interface RunOptions {
@@ -463,6 +497,8 @@ export interface RunOptions {
   configCwd?: string;
   /** Called on tool start/end with activity info. */
   onToolActivity?: (activity: ToolActivity) => void;
+  /** Called when a new public assistant message starts. */
+  onTextStart?: () => void;
   /** Called on streaming text deltas from the assistant response. */
   onTextDelta?: (delta: string, fullText: string) => void;
   onSessionCreated?: (session: AgentSession) => void;
@@ -777,7 +813,7 @@ export async function runAgent(
     for (const name of agentConfig.builtinToolNames) {
       if (!knownBuiltins.has(name)) {
         options.onToolActivity?.({
-          type: "end",
+          type: "end", toolCallId: `config:tool:${name}`, isError: true,
           toolName: `tools-error:tool "${name}" requested by agent "${type}" is not a known built-in`,
         });
       }
@@ -796,7 +832,7 @@ export async function runAgent(
   // loads, so there is nothing to exclude.
   if (hasExcludes && noExtensions) {
     options.onToolActivity?.({
-      type: "end",
+      type: "end", toolCallId: "config:exclude-disabled", isError: true,
       toolName: `extension-error:exclude_extensions has no effect for agent "${type}" — extensions: false loads nothing`,
     });
   }
@@ -807,7 +843,7 @@ export async function runAgent(
     for (const name of excludeNames) {
       if (!discoveredNames.has(name)) {
         options.onToolActivity?.({
-          type: "end",
+          type: "end", toolCallId: `config:exclude:${name}`, isError: true,
           toolName: `extension-error:exclude_extensions: "${name}" for agent "${type}" did not match any discovered extension`,
         });
       }
@@ -820,7 +856,7 @@ export async function runAgent(
     for (const name of keepNames) {
       if (!survivingNames.has(name)) {
         options.onToolActivity?.({
-          type: "end",
+          type: "end", toolCallId: `config:include:${name}`, isError: true,
           toolName: excludeNames.has(name)
             ? `extension-error:extension "${name}" is in both extensions: and exclude_extensions: for agent "${type}" — exclude wins`
             : `extension-error:extension "${name}" requested by agent "${type}" was not loaded`,
@@ -830,7 +866,7 @@ export async function runAgent(
     for (const name of extNames) {
       if (!survivingNames.has(name)) {
         options.onToolActivity?.({
-          type: "end",
+          type: "end", toolCallId: `config:selector:${name}`, isError: true,
           toolName: `extension-error:ext:${name} referenced by agent "${type}" but extension "${name}" is not loaded (check extensions:/exclude_extensions:)`,
         });
       }
@@ -1028,7 +1064,7 @@ export async function runAgent(
   await session.bindExtensions({
     onError: (err) => {
       options.onToolActivity?.({
-        type: "end",
+        type: "end", toolCallId: `extension-error:${err.extensionPath}`, isError: true,
         toolName: `extension-error:${err.extensionPath}`,
       });
     },
@@ -1059,11 +1095,10 @@ export async function runAgent(
   let softLimitReached = false;
   let aborted = false;
 
-  let currentMessageText = "";
+  const unsubActivity = subscribeActivity(session, options);
   const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
     if (event.type === "turn_end") {
       turnCount++;
-      options.onTurnEnd?.(turnCount);
       if (maxTurns != null) {
         if (!softLimitReached && turnCount >= maxTurns) {
           softLimitReached = true;
@@ -1073,32 +1108,6 @@ export async function runAgent(
           session.abort();
         }
       }
-    }
-    if (event.type === "message_start") {
-      currentMessageText = "";
-    }
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      currentMessageText += event.assistantMessageEvent.delta;
-      options.onTextDelta?.(event.assistantMessageEvent.delta, currentMessageText);
-    }
-    if (event.type === "tool_execution_start") {
-      options.onToolActivity?.({ type: "start", toolName: event.toolName });
-    }
-    if (event.type === "tool_execution_end") {
-      options.onToolActivity?.({ type: "end", toolName: event.toolName });
-    }
-    if (event.type === "message_end" && event.message.role === "assistant") {
-      const u = (event.message as any).usage;
-      if (u) options.onAssistantUsage?.({
-        input: u.input ?? 0,
-        output: u.output ?? 0,
-        cacheWrite: u.cacheWrite ?? 0,
-        cacheRead: u.cacheRead ?? 0,
-        cost: u.cost?.total ?? 0,
-      });
-    }
-    if (event.type === "compaction_end" && !event.aborted && event.result) {
-      options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
     }
   });
 
@@ -1133,6 +1142,7 @@ export async function runAgent(
     }
   } finally {
     unsubTurns();
+    unsubActivity();
     collector.unsubscribe();
     cleanupAbort();
   }
@@ -1163,12 +1173,7 @@ export async function runAgent(
 export async function resumeAgent(
   session: AgentSession,
   prompt: string,
-  options: {
-    onToolActivity?: (activity: ToolActivity) => void;
-    onAssistantUsage?: (usage: LifetimeUsage) => void;
-    onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
-    signal?: AbortSignal;
-  } = {},
+  options: Pick<RunOptions, "onToolActivity" | "onTextStart" | "onTextDelta" | "onTurnEnd" | "onAssistantUsage" | "onCompaction" | "signal"> = {},
 ): Promise<{ text: string; failure?: string }> {
   // Boundary for the history fallback: the session already holds prior turns,
   // so only assistant text produced by THIS resume prompt counts as its output
@@ -1177,25 +1182,7 @@ export async function resumeAgent(
   const collector = collectResponseText(session);
   const cleanupAbort = forwardAbortSignal(session, options.signal);
 
-  const unsubEvents = (options.onToolActivity || options.onAssistantUsage || options.onCompaction)
-    ? session.subscribe((event: AgentSessionEvent) => {
-        if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName });
-        if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName });
-        if (event.type === "message_end" && event.message.role === "assistant") {
-          const u = (event.message as any).usage;
-          if (u) options.onAssistantUsage?.({
-            input: u.input ?? 0,
-            output: u.output ?? 0,
-            cacheWrite: u.cacheWrite ?? 0,
-            cacheRead: u.cacheRead ?? 0,
-            cost: u.cost?.total ?? 0,
-          });
-        }
-        if (event.type === "compaction_end" && !event.aborted && event.result) {
-          options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
-        }
-      })
-    : () => {};
+  const unsubEvents = subscribeActivity(session, options);
 
   try {
     await session.prompt(prompt);

@@ -59,6 +59,7 @@ describe("AgentWidget", () => {
 
   function makeActivity(): AgentActivity {
     return {
+      history: [], omittedActivities: 0,
       activeTools: new Map(),
       toolUses: 0,
       responseText: "",
@@ -154,16 +155,15 @@ describe("AgentWidget", () => {
     expect(renderLines(manager, "unflagged", () => "background")).toContain("unflagged description");
   });
 
-  // The model is opt-in: the row is already dense, and the same pair is on the
-  // tool result and in the conversation viewer either way.
+  // Dedicated model rows use the canonical identifier and effective level.
   it("names the model and thinking on a running row under showModel", () => {
     const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
 
     expect(renderLines(manager, "bg", () => "background", true))
-      .toContain("sonnet 4.6 · thinking: high");
+      .toContain("anthropic/claude-sonnet-4-6:high");
   });
 
-  it("renders the row exactly as before when showModel is off", () => {
+  it("hides model details when showModel is off", () => {
     const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
 
     const off = renderLines(manager, "bg", () => "background");
@@ -172,25 +172,26 @@ describe("AgentWidget", () => {
     expect(off).not.toContain("thinking:");
   });
 
-  it("carries the short label, never the canonical id, onto the row", () => {
+  it("carries the canonical id rather than a short label", () => {
     const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
 
     expect(renderLines(manager, "bg", () => "background", true))
-      .not.toContain("anthropic/claude-sonnet-4-6");
+      .toContain("anthropic/claude-sonnet-4-6");
   });
 
-  it("discloses a level the run did not honor", () => {
+  it("omits the suffix when the effective thinking level is unknown", () => {
     const record = makeRecord("bg", { isBackground: true });
-    record.invocation = { modelName: "haiku 4.5", thinking: "high", requestedThinking: "max" };
+    delete (record.invocation as { thinking?: string }).thinking;
     const manager = { listAgents: () => [record] };
 
-    expect(renderLines(manager, "bg", () => "background", true))
-      .toContain("haiku 4.5 · thinking: high (asked max)");
+    const lines = renderLines(manager, "bg", () => "background", true);
+    expect(lines).toContain("anthropic/claude-sonnet-4-6");
+    expect(lines).not.toContain("claude-sonnet-4-6:");
   });
 
   // Queued agents stay a one-line count. A fan-out of ten would otherwise eat
   // the whole widget and push every finished agent out of it.
-  it("keeps queued agents on one summary line and finished agents visible", () => {
+  it("keeps queued agents on one summary line and accounts for hidden finished agents", () => {
     const records = [
       ...[1, 2, 3].map(i => ({ ...makeRecord(`run${i}`, { isBackground: true }), status: "running" })),
       ...[1, 2, 3, 4, 5, 6, 7].map(i => ({ ...makeRecord(`q${i}`, { isBackground: true }), status: "queued" })),
@@ -215,8 +216,7 @@ describe("AgentWidget", () => {
 
     expect(lines).toContain("7 queued");
     expect(lines).not.toContain("q1 description");
-    for (const i of [1, 2, 3]) expect(lines).toContain(`fin${i} description`);
-    expect(lines).not.toContain("more (");
+    expect(lines).toContain("+3 more (3 finished)");
   });
 
   // "off" hides the widget entirely — even a background agent renders nothing.

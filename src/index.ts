@@ -17,6 +17,7 @@ import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type Exten
 import { Container, Key, matchesKey, type SettingItem, SettingsList, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { abortable } from "./abortable.js";
+import { createActivityTracker } from "./agent-activity.js";
 import { hasAgentBadge, renderAgentName } from "./agent-color.js";
 import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "./agent-file-toggle.js";
 import { AgentManager, isTopLevelAgent } from "./agent-manager.js";
@@ -99,53 +100,6 @@ export function renderRunningAgentStatus(
 function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
   const t = getLifetimeTotal(o.lifetimeUsage);
   return t > 0 ? formatTokens(t) : "";
-}
-
-/**
- * Create an AgentActivity state and spawn callbacks for tracking tool usage.
- * Used by both foreground and background paths to avoid duplication.
- */
-function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
-  const state: AgentActivity = {
-    activeTools: new Map(),
-    toolUses: 0,
-    turnCount: 1,
-    maxTurns,
-    responseText: "",
-    session: undefined,
-  };
-
-  const callbacks = {
-    onToolActivity: (activity: { type: "start" | "end"; toolName: string }) => {
-      if (activity.type === "start") {
-        state.activeTools.set(activity.toolName + "_" + Date.now(), activity.toolName);
-      } else {
-        for (const [key, name] of state.activeTools) {
-          if (name === activity.toolName) { state.activeTools.delete(key); break; }
-        }
-        state.toolUses++;
-      }
-      onStreamUpdate?.();
-    },
-    onTextDelta: (_delta: string, fullText: string) => {
-      state.responseText = fullText;
-      onStreamUpdate?.();
-    },
-    onTurnEnd: (turnCount: number) => {
-      state.turnCount = turnCount;
-      onStreamUpdate?.();
-    },
-    onSessionCreated: (session: any) => {
-      state.session = session;
-    },
-    // Spend is accumulated on the AgentRecord (agent-manager), which is what
-    // every surface reads; this callback exists here only to repaint on it.
-    onAssistantUsage: (_usage: LifetimeUsage) => {
-      onStreamUpdate?.();
-    },
-  };
-
-  return { state, callbacks };
 }
 
 /**
@@ -422,7 +376,7 @@ export default function (pi: ExtensionAPI) {
   function isShowCostEnabled(): boolean { return showCost; }
   function setShowCost(b: boolean): void { showCost = b; widget.update(); fleet.update(); }
   /** Name the model and thinking level on the widget's running rows. */
-  let showModel = false;
+  let showModel = true;
   function isShowModelEnabled(): boolean { return showModel; }
   function setShowModel(b: boolean): void { showModel = b; widget.update(); }
   /**
@@ -1314,6 +1268,9 @@ export default function (pi: ExtensionAPI) {
     const record = await manager.resume(id, prompt, undefined, {
       isBackground: true,
       onToolActivity: bgCallbacks.onToolActivity,
+      onTextStart: bgCallbacks.onTextStart,
+      onTextDelta: bgCallbacks.onTextDelta,
+      onTurnEnd: bgCallbacks.onTurnEnd,
       onAssistantUsage: bgCallbacks.onAssistantUsage,
       // Fires when the run actually starts — immediately, or on queue
       // drain. Wiring it here (rather than after resume() returns) means a
@@ -2019,7 +1976,17 @@ Terse command-style prompts produce shallow, generic work.
           );
         }
 
-        const record = await manager.resume(params.resume, params.prompt, signal);
+        const { state, callbacks } = createActivityTracker();
+        state.session = existing.session;
+        agentActivity.set(existing.id, state);
+        widget.markRunning(existing.id);
+        widget.ensureTimer();
+        const record = await manager.resume(params.resume, params.prompt, signal, callbacks).finally(() => {
+          agentActivity.delete(existing.id);
+          widget.markFinished(existing.id);
+          widget.update();
+          fleet.update();
+        });
         if (!record) {
           return textResult(`Failed to resume agent "${params.resume}".`);
         }
@@ -3640,7 +3607,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           id: "showModel",
           label: "Show model",
           description:
-            "Name the model driving each agent, and the thinking level it is running at, on the widget's running rows. The Agent tool result and the conversation viewer show the pair either way — this adds it to the widget, where the row is already dense.",
+            "Show the canonical provider/model and effective thinking level on a dedicated widget line. Enabled by default; the Agent tool result and conversation viewer show model details either way.",
           currentValue: isShowModelEnabled() ? "on" : "off",
           values: ["on", "off"],
         },
