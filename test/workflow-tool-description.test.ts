@@ -1,12 +1,11 @@
 /**
- * workflow-tool-description.test.ts — the model reads this text on every turn,
- * and nothing else checks it.
+ * workflow-tool-description.test.ts — pin the on-demand authoring reference
+ * against the runtime, and keep the startup description concise.
  *
- * `tool-description.ts` is one exported template literal, so coverage reports it
- * at 100% (1/1 statements) no matter what it says. That is exactly the shape of
- * file that drifts: the description once told the model `resume` was only
- * exclusive with `agentType`, while the runtime rejected six options, and an
- * example once combined `resume` with `gate`, which throws.
+ * Prose coverage cannot detect contract drift: the old tool description once
+ * told the model `resume` was only exclusive with `agentType`, while the runtime
+ * rejected six options, and an example combined `resume` with `gate`, which
+ * throws. Keep those guards on the reference now that it is loaded on demand.
  *
  * So the assertions here derive their expectations from `worker-source.ts`
  * rather than restating them: the option set, the exclusions and the effort
@@ -23,9 +22,9 @@ import {
   WORKFLOW_ITEM_CAP,
   workflowConcurrency,
 } from "../src/workflow/runtime.js";
-import { fullWorkflowToolDescription } from "../src/workflow/tool-description.js";
+import { fullWorkflowToolDescription, workflowAuthoringPath } from "../src/workflow/tool-description.js";
 
-const description = fullWorkflowToolDescription;
+const description = readFileSync(workflowAuthoringPath, "utf8");
 const workerSource = readFileSync(
   fileURLToPath(new URL("../src/workflow/worker-source.ts", import.meta.url)),
   "utf8",
@@ -144,13 +143,33 @@ describe("the limits it quotes", () => {
 });
 
 describe("rendering", () => {
-  it("keeps the placeholder the live agent roster is substituted into", () => {
-    expect(description).toContain("{{typeList}}");
+  it("requires reading the shipped local DSL before authoring without embedding it", () => {
+    expect(fullWorkflowToolDescription).toContain("Before authoring or editing ANY workflow, read");
+    expect(fullWorkflowToolDescription).toContain(workflowAuthoringPath);
+    expect(fullWorkflowToolDescription.length).toBeLessThan(3200);
+    expect(fullWorkflowToolDescription).not.toContain("Loop-until-count pattern");
+    expect(description).toContain("Loop-until-count pattern");
   });
 
-  it("leaves no unescaped template interpolation from the source literal", () => {
-    // A bare `${...}` in the .ts literal would interpolate at module load and
-    // reach the model as a value (or throw), not as the example text.
+  it("retains consent, honest background results, and sandbox contracts inline", () => {
+    for (const contract of [
+      "explicit user opt-in", "skill/slash command", "named/saved workflow",
+      "not consent", "scope/cost and ask", "Do not poll or sleep",
+      "Never fabricate or predict", "still running", "pure-literal", "await all",
+      "no filesystem/network/modules", "schema-validated", "Filter nulls",
+      "unchanged leading", "finished run in this session", "Worktree copies",
+      "uncommitted/staged", "Removed on settle", "settings still apply",
+    ]) expect(fullWorkflowToolDescription).toContain(contract);
+  });
+
+  it("points to the live roster instead of shipping a stale agent list", () => {
+    expect(description).toContain("live Agent tool roster");
+    expect(description).not.toContain("{{typeList}}");
+  });
+
+  it("preserves example interpolation literally in the moved reference", () => {
+    // Moving from a TS template to Markdown must preserve JS interpolation,
+    // not render it into the documentation.
     expect(description).not.toContain("[object Object]");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder is the subject under test
     expect(description).toContain("${f.title}");

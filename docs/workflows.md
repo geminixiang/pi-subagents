@@ -12,7 +12,7 @@ Until workflows existed, the only way to run several agents at once was to name 
 
 A script can loop, branch, and fan out over a list discovered at runtime. A batch of tool calls cannot. Each `agent()` call in the script spawns a real subagent with its own context window, its own tools, and its own model — the script is only the coordinator, and it has no filesystem or network of its own.
 
-Use the `Agent` tool for one delegated task, or a handful you can name up front. Reach for a workflow when the *number* of agents depends on something discovered at runtime, when work flows through stages, or when you want findings independently verified before you believe them. It costs a subprocess per agent, so it is not the thing to dress a single task up as.
+Use the `Agent` tool for one delegated task, or a handful you can name up front. With explicit user opt-in to workflows or multi-agent orchestration, reach for a workflow when the *number* of agents depends on something discovered at runtime, when work flows through stages, or when you want findings independently verified before you believe them. It costs a subprocess per agent, so it is not the thing to dress a single task up as.
 
 ## The lifecycle
 
@@ -27,7 +27,7 @@ There is no `/workflows` command. The tool is model-invoked, so you get a workfl
 | "fix the failing test, and don't tell me it's done until `npm test` passes" | A `gate` on the fix agent, and a retry loop around it |
 | "use a workflow to …" | Forces the shape when the model would otherwise reach for plain `Agent` calls |
 
-You do not have to say "workflow" — the model picks the tool — but saying it removes the ambiguity when the task is borderline.
+Explicit opt-in is required: ask for a workflow or multi-agent orchestration in your own words, invoke a skill/slash command that instructs the model to call SubagentWorkflow, or name a saved workflow to run. A task merely benefiting from parallelism is not opt-in; for the examples above, add "use a workflow" or expect the model to ask about scope and cost first. Enabling the tool in settings is not permission to run one.
 
 ### 2. Read what came back
 
@@ -226,7 +226,7 @@ export const meta = {
 | `resumeFromRunId` | string | Replay an earlier run in this session. Matches `^wf_[a-z0-9-]{6,}$` |
 | `title` / `description` | string | Accepted and ignored — for Claude Code parity, so a ported call does not fail. A workflow is named by its `meta` block |
 
-At least one of `script` / `scriptPath` / `name` is required; `scriptPath` wins over `script`, which wins over `name`.
+Provide `script`, `scriptPath`, or `name`, or use `resumeFromRunId` alone to reuse its script. `scriptPath` wins over `script`, which wins over `name`.
 
 ### `agent(prompt, opts?)`
 
@@ -312,7 +312,7 @@ A run's concurrency limit is its own, independent of the session's `maxConcurren
 
 ## Recipes
 
-The orchestration patterns themselves — adversarial verification, judge panels, loop-until-dry — live in exactly one place: the tool description the model reads on every turn. It already knows them. So these are not instructions for writing scripts by hand; they are **what to ask for**, and what the resulting script looks like so you can recognize it in the file.
+The full DSL and orchestration patterns — adversarial verification, judge panels, loop-until-dry — live in the shipped [authoring reference](workflow-authoring.md). The concise tool description directs the model to read that local file before authoring or editing any workflow, rather than injecting the tutorial on every turn. So these are not instructions for writing scripts by hand; they are **what to ask for**, and what the resulting script looks like so you can recognize it in the file.
 
 ### Fan out over a list you don't have yet
 

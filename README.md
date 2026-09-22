@@ -691,7 +691,7 @@ Leaving it unset is not quite the same as `true`. Unset means *auto*: on, unless
 
 The match is on the exact tool names `Workflow` (Claude Code's) and `SubagentWorkflow` (ours), never a substring, so a `list_workflows` or `github_workflow_run` from some CI integration does not silently take the feature down. The check runs at `session_start` and nowhere earlier, because `getAllTools` throws during extension loading and load order means a check at registration time could not see an extension that has not loaded yet — so the tool is registered first and withdrawn from the active set through `setActiveTools`, which rebuilds the system prompt before any turn runs. When the other extension took the `SubagentWorkflow` name itself, pi's first-registration-wins rule already dropped ours, so there is nothing to withdraw and only the menu and the CLI flag come down.
 
-**Tool description** (`toolDescriptionMode`, default `"full"`): which Agent tool description the LLM sees. `"full"` is the rich Claude Code-style prompt (~1,400 tokens with the default agents); `"compact"` is ~75% smaller — one-line agent type list, terse usage notes — for small/local models where tool-spec tokens are expensive. Per-option details stay in the parameter descriptions in every mode (the parameter schema is never customizable). Applies on the next pi session.
+**Tool description** (`toolDescriptionMode`, default `"full"`): which Agent tool description the LLM sees. `"full"` keeps complete agent descriptions and model/tool scope with concise usage contracts; `"compact"` uses first-sentence agent descriptions for a smaller roster. Neither injects a delegation tutorial. SubagentWorkflow likewise keeps essential contracts inline and directs the model to read the shipped local [authoring reference](docs/workflow-authoring.md) before writing or editing scripts; the full DSL and recipes cost context only when read. Per-option details stay in the parameter descriptions in every mode (the parameter schema is never customizable). Applies on the next pi session.
 
 `"custom"` registers your own description from `<cwd>/.pi/agent-tool-description.md` (project) or `<agentDir>/agent-tool-description.md` (global; project wins). The file is read once at tool registration, so edits also apply on the next pi session. Dynamic parts stay live via placeholders — a static agent list would go stale the moment you add a custom agent:
 
@@ -704,7 +704,7 @@ Custom agents live in .pi/agents/ or {{agentDir}}/agents/.
 
 Placeholders: `{{typeList}}` (full per-agent descriptions), `{{compactTypeList}}` (first sentence each), `{{agentDir}}`, `{{isolationGuideline}}` and `{{scheduleGuideline}}` (each expands with its own leading newline + `- ` bullet when the matching feature is on — place them directly after your last rule line; empty when [worktree isolation](#turning-worktrees-off) / scheduling is off). Unknown placeholders are left verbatim with a stderr warning; a missing or empty file falls back to `"full"` with a warning. Note the usual trust umbrella: a project-level file shapes the orchestrator's prompt, same as project agents and extensions do.
 
-**Starting point:** copy [`examples/agent-tool-description.md`](examples/agent-tool-description.md) — it reproduces the default full description exactly (a CI test keeps it in sync), so you can trim from a known-good baseline instead of writing from scratch.
+**Starting point:** copy [`examples/agent-tool-description.md`](examples/agent-tool-description.md) — it preserves the longer delegation tutorial as an opt-in custom template, so you can adapt it without expanding the default tool definition. Existing custom files and placeholder expansion are unchanged.
 
 **Example — global defaults for a beefy machine:**
 
@@ -933,6 +933,7 @@ This is useful for creating agents that inherit extension tools but should not h
 ```
 docs/                 # Long-form guides (shipped to npm; README links out to them)
   workflows.md        # SubagentWorkflow: writing, editing, saving and re-running scripts
+  workflow-authoring.md # On-demand model reference: full DSL and orchestration recipes
   rpc.md              # Cross-extension integration: pi.events, subagents:rpc:*, manager registry
 examples/
   workflows/          # Runnable examples, executed by test/workflow-examples.test.ts
@@ -989,7 +990,7 @@ src/
     progress.ts       # Progress event log and every derived view of it (pure)
     host.ts           # WorkflowHost adapter over AgentManager
     task.ts           # local_workflow task record and batched progress updates
-    tool-description.ts # Model-facing description carrying the orchestration patterns
+    tool-description.ts # Concise contracts and absolute local authoring-reference path
   ui/
     agent-widget.ts       # Persistent widget: spinners, activity, status icons, theming
     fleet-list.ts         # FleetView: navigable agent list below the editor

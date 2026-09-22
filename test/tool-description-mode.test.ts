@@ -95,8 +95,9 @@ describe("toolDescriptionMode", () => {
   it("defaults to the full description", () => {
     const tools = setup();
     const desc: string = tools.get("Agent").description;
-    expect(desc).toContain("## Usage notes");
-    expect(desc).toContain("## Writing the prompt");
+    expect(desc).toContain("Delegate a self-contained task");
+    expect(desc).not.toContain("## Writing the prompt");
+    expect(desc.length).toBeLessThan(3000);
     // Full agent descriptions are embedded (a late Explore sentence survives).
     expect(desc).toContain("very thorough");
   });
@@ -112,13 +113,13 @@ describe("toolDescriptionMode", () => {
     expect(desc).toContain("- Explore: Fast read-only search agent for locating code. (Tools:");
     expect(desc).not.toContain("very thorough");
     // The point of the feature: materially smaller than the full version.
-    expect(desc.length).toBeLessThan(1600);
+    expect(desc.length).toBeLessThan(1700);
   });
 
   it("invalid mode in the settings file is dropped — full description", () => {
     const tools = setup({ toolDescriptionMode: "tiny" });
     const desc: string = tools.get("Agent").description;
-    expect(desc).toContain("## Usage notes");
+    expect(desc).toContain("Delegate a self-contained task");
   });
 
   it("compact keeps every load-bearing contract — fails when a behavior change forgets compact", () => {
@@ -138,14 +139,8 @@ describe("toolDescriptionMode", () => {
     }
   });
 
-  // The compact test above pins the prose alone, which is right for compact —
-  // it is the only place that mode states these. `full` is different: several
-  // contracts are stated twice, in the description AND in the param schema, so
-  // pinning prose alone would block a legitimate move of one into the other
-  // while missing the failure that actually matters — a contract that ends up
-  // in neither. Asserting over description + schema is the invariant that
-  // survives either choice. The second test then keeps the schema half honest,
-  // so "it's also in the schema" can never degrade to an empty stub.
+  // Contracts may live in the description or parameter docs; test both so a
+  // legitimate move between them does not mask a missing contract.
   it("full states every load-bearing contract in the description or the schema", () => {
     const tool = setup().get("Agent");
     const visible = `${tool.description}\n${JSON.stringify(tool.parameters)}`;
@@ -162,6 +157,27 @@ describe("toolDescriptionMode", () => {
     ]) {
       expect(visible).toContain(contract);
     }
+  });
+
+  it.each(["full", "compact"])("%s preserves startup safety contracts and bounded schemas", (mode) => {
+    const tools = setup({ toolDescriptionMode: mode });
+    const agent = tools.get("Agent");
+    const workflow = tools.get("SubagentWorkflow");
+    const visible = agent.description + JSON.stringify(agent.parameters) + agent.promptGuidelines.join("\n");
+    for (const contract of ["do not poll or sleep", "fabricate", "still running", "very next action", "nothing else could usefully happen", "explicit user request", "vague monitoring intent", "no resume, inherit_context", "uncommitted or staged", "removed on completion", "branch named in the result"])
+      expect(visible).toContain(contract);
+    expect(JSON.stringify({ description: agent.description, parameters: agent.parameters }).length).toBeLessThan(5800);
+    expect(JSON.stringify({ description: workflow.description, parameters: workflow.parameters }).length).toBeLessThan(5000);
+    const guidance = [...tools.values()].map(t => [t.promptSnippet, ...(t.promptGuidelines ?? [])].join("\n")).join("\n");
+    expect(guidance.length).toBeLessThan(1100);
+    expect(Object.keys(agent.parameters.properties)).toEqual(["prompt", "description", "name", "subagent_type", "model", "thinking", "max_turns", "run_in_background", "resume", "isolated", "inherit_context", "isolation", "schedule"]);
+    expect(agent.parameters.required).toEqual(["prompt", "description", "subagent_type"]);
+    expect(agent.parameters.properties.max_turns.minimum).toBe(1);
+    expect(agent.parameters.properties.isolation.anyOf.map((v: { const: string }) => v.const)).toEqual(["off", "worktree"]);
+    expect(Object.keys(workflow.parameters.properties)).toEqual(["script", "scriptPath", "name", "args", "resumeFromRunId", "title", "description"]);
+    expect(workflow.parameters.required).toBeUndefined();
+    expect(workflow.parameters.properties.script.maxLength).toBe(524288);
+    expect(workflow.parameters.properties.resumeFromRunId.pattern).toBe("^wf_[a-z0-9-]{6,}$");
   });
 
   it("every strategy param carries a real description of its own", () => {
@@ -244,9 +260,8 @@ describe("toolDescriptionMode", () => {
     expect(desc).not.toContain("}}");
   });
 
-  it("the shipped example template renders byte-identical to the full description", async () => {
-    // Guards examples/agent-tool-description.md against going stale: it must
-    // reproduce the full description exactly. If you edit one, edit the other.
+  it("the shipped long tutorial remains an opt-in custom template", async () => {
+    // Custom templates are not silently shortened or replaced by the defaults.
     const example = readFileSync(EXAMPLE_TEMPLATE, "utf-8");
     const tools = setup({ toolDescriptionMode: "custom" }, () => {
       writeFileSync(join(tmpDir, ".pi", "agent-tool-description.md"), example);
@@ -258,7 +273,9 @@ describe("toolDescriptionMode", () => {
     const second = makePi();
     subagentsExtension(second.pi);
     try {
-      expect(customDesc).toBe(second.tools.get("Agent").description);
+      expect(customDesc).toContain("## Writing the prompt");
+      expect(customDesc).toContain("Never delegate understanding");
+      expect(customDesc.length).toBeGreaterThan(second.tools.get("Agent").description.length * 2);
     } finally {
       await second.handlers.get("session_shutdown")?.({}, { hasUI: false, ui: {} } as any);
     }
@@ -269,7 +286,7 @@ describe("toolDescriptionMode", () => {
     try {
       const tools = setup({ toolDescriptionMode: "custom" });
       const desc: string = tools.get("Agent").description;
-      expect(desc).toContain("## Usage notes");
+      expect(desc).toContain("Delegate a self-contained task");
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("no agent-tool-description.md found"));
     } finally {
       warn.mockRestore();
@@ -312,7 +329,7 @@ describe("toolDescriptionMode", () => {
     it("advertises `isolation` in schema and prose by default", () => {
       const tools = setup();
       expect(props(tools)).toContain("isolation");
-      expect(tools.get("Agent").description).toContain('Use isolation: "worktree"');
+      expect(tools.get("Agent").description).toContain('isolation: "worktree"');
     });
 
     it("drops both when worktree isolation is disabled", () => {
