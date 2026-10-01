@@ -7,8 +7,7 @@
  *
  * ## Which typebox
  *
- * **`typebox`, not `@sinclair/typebox`.** They are different packages and both
- * are installed here. `@sinclair/typebox` (0.34) dispatches on a `Kind` symbol
+ * **`typebox` v1, not legacy `@sinclair/typebox`.** Legacy TypeBox (0.34) dispatches on a `Kind` symbol
  * that a schema arriving over the wire does not carry, so `Value.Check` throws
  * `Unknown type` on a plain JSON Schema — and `Type.Unsafe` does not help, it
  * stamps a `Kind` that is not registered. `typebox` v1 is a standards JSON

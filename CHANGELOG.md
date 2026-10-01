@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`typebox` is now a host-provided peer dependency.** Extensions import the host `typebox` package instead of installing `@sinclair/typebox` or `typebox`, avoiding duplicate runtime modules and pi's extension package warning.
 - **Running-agent widgets show recent public activity.** A dedicated model line shows canonical `provider/model:thinking` by default; explicit Show model off is respected. Context usage is labeled, and up to five chronological assistant-text/tool summaries show correlated running, success, or error status on fresh runs and resumes. Busy fleets reduce histories with omission counts to stay within the existing height cap.
 
 ### Fixed

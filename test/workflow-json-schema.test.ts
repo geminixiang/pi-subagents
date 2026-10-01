@@ -34,7 +34,7 @@ const compile = (schema: unknown) => {
 
 describe("compiling a script-supplied schema", () => {
   it("accepts a plain JSON Schema, with no TypeBox ceremony", () => {
-    // The whole feature rests on this: `@sinclair/typebox` throws `Unknown
+    // The whole feature rests on this: legacy `@sinclair/typebox` throws `Unknown
     // type` on a schema with no Kind symbol, so if this ever regresses to that
     // package every schema call dies at the first validation.
     expect(compileJsonSchema(FINDINGS).ok).toBe(true);

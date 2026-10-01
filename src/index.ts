@@ -15,7 +15,7 @@ import { isAbsolute, join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getSettingsListTheme, ModelSelectorComponent } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, type SettingItem, SettingsList, Spacer, Text } from "@earendil-works/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { abortable } from "./abortable.js";
 import { createActivityTracker } from "./agent-activity.js";
 import { hasAgentBadge, renderAgentName } from "./agent-color.js";
