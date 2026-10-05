@@ -1503,7 +1503,7 @@ describe("agent-runner master tool allowlist", () => {
 
     const tools = lastToolsPassed();
     expect(tools).not.toContain("bash");
-    expect(tools).toEqual(BUILTINS_7.filter((t) => t !== "bash"));
+    expect(tools).toEqual([...BUILTINS_7.filter((t) => t !== "bash"), "codemode"]);
   });
 
   it("dynamic mode: leaves the allowlist unset, denies via excludeTools, activates post-bind", async () => {
@@ -1695,7 +1695,7 @@ describe("agent-runner async extension tool registration", () => {
 
     // A hard registry gate is the right boundary here: nothing can register
     // asynchronously, so there is no active-set narrowing to maintain.
-    expect(createAgentSession.mock.calls[0][0].tools).toEqual(["read"]);
+    expect(createAgentSession.mock.calls[0][0].tools).toEqual(["read", "codemode"]);
     expect(session.setActiveToolsByName).not.toHaveBeenCalled();
     expect(session.agent.beforeToolCall).toBeUndefined();
   });
@@ -2324,7 +2324,7 @@ describe("agent-runner ext: tool selectors", () => {
 
     expect(lastLoaderOpts().noExtensions).toBe(true);
     const tools = lastToolsPassed();
-    expect(tools).toEqual(["read"]);
+    expect(tools).toEqual(["read", "codemode"]);
     expect(tools).not.toContain("foo_tool");
     expect(onToolActivity).toHaveBeenCalledWith(
       expect.objectContaining({

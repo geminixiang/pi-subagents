@@ -11,6 +11,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
+  createCodemodeExtension,
   DefaultResourceLoader,
   type ExtensionAPI,
   getAgentDir,
@@ -225,11 +226,11 @@ export function parseExtSelectors(entries: string[]): {
  * outlive the `runAgent` call so resumed/steered turns stay scoped. pi's `dispose()`
  * clears `_eventListeners`, so they die with the session rather than leaking.
  *
- * Only meaningful when extensions are loaded — under `noExtensions`/`isolated` the
- * static `allowedToolNames` allowlist already gates the registry itself.
+ * Codemode shares this predicate for its catalog and nested calls. Pi admits
+ * inactive deferred tools to scripts, so narrowing only the active set would
+ * let scripts bypass `ext:` selectors.
  */
-export function installExtensionToolScope(
-  session: AgentSession,
+function createExtensionToolScope(
   ctx: {
     loader: DefaultResourceLoader;
     toolNames: string[];
@@ -246,7 +247,7 @@ export function installExtensionToolScope(
      */
     readmitToolNames: Set<string>;
   },
-): void {
+): () => Set<string> {
   const { loader, toolNames, disallowedSet, extNames, narrowing, readmitToolNames } = ctx;
 
   // The names allowed right now. Mirrors the `ext:` opt-in flip: when any `ext:`
@@ -277,6 +278,10 @@ export function installExtensionToolScope(
     return keep;
   };
 
+  return inScope;
+}
+
+export function installExtensionToolScope(session: AgentSession, inScope: () => Set<string>): void {
   const renarrow = () => {
     const allowed = inScope();
     const next = session.getAllTools().map((t) => t.name).filter((n) => allowed.has(n));
@@ -692,7 +697,8 @@ export async function runAgent(
     }
   }
 
-  let toolNames = getToolNamesForType(type);
+  // Codemode accompanies every tool preset, including explicit restricted lists.
+  let toolNames = [...new Set([...getToolNamesForType(type), "codemode"])];
 
   // Persistent memory: detect write capability and branch accordingly.
   // Account for disallowedTools — a tool in the base set but on the denylist is not truly available.
@@ -782,6 +788,7 @@ export async function runAgent(
           return {
             ...base,
             extensions: base.extensions.filter((e) => {
+              if (e.path === "<inline:subagent-codemode>") return true;
               const canons = extensionCanonicalNames(e.path);
               if (canons.some((n) => excludeNames.has(n))) return false; // exclude wins
               return loadAll || canons.some((n) => keepNames.has(n));
@@ -789,11 +796,40 @@ export async function runAgent(
           };
         };
 
+  // Filled before session construction. Codemode must use the same live scope as
+  // direct calls: deferred/codemode-exposure tools can be callable while inactive.
+  let inScope = () => new Set<string>();
   const loader = new DefaultResourceLoader({
     cwd: configCwd,
     agentDir,
     noExtensions,
     additionalExtensionPaths,
+    extensionFactories: [{
+      name: "subagent-codemode",
+      factory: (pi) => createCodemodeExtension({ mode: "on" })({
+        ...pi,
+        registerTool: (tool) => pi.registerTool({
+          ...tool,
+          prepareLoadout: (loadout) => {
+            const allowed = inScope();
+            return tool.prepareLoadout?.({
+              ...loadout, callable: loadout.callable.filter((t) => allowed.has(t.name)),
+            });
+          },
+          execute: (id, args, signal, onUpdate, ctx) => {
+            const allowed = inScope();
+            return tool.execute(id, args, signal, onUpdate, {
+              ...ctx,
+              tools: ctx.tools.filter((t) => allowed.has(t.name)),
+              executeTool: (name, params, options) => {
+                if (!inScope().has(name)) throw new Error(`Tool "${name}" is not available to this subagent.`);
+                return ctx.executeTool(name, params, options);
+              },
+            });
+          },
+        }),
+      }),
+    }],
     extensionsOverride,
     noSkills,
     noPromptTemplates: true,
@@ -809,7 +845,7 @@ export async function runAgent(
   // this produced a silently broken agent (#75) — pi-mono accepted the bogus name
   // into the allowlist, then dropped it at registration with no signal back.
   if (agentConfig?.builtinToolNames?.length) {
-    const knownBuiltins = new Set(BUILTIN_TOOL_NAMES);
+    const knownBuiltins = new Set([...BUILTIN_TOOL_NAMES, "codemode"]);
     for (const name of agentConfig.builtinToolNames) {
       if (!knownBuiltins.has(name)) {
         options.onToolActivity?.({
@@ -932,6 +968,8 @@ export async function runAgent(
     ...structuredToolNames,
   ]);
 
+  inScope = createExtensionToolScope({ loader, toolNames, disallowedSet, extNames, narrowing, readmitToolNames });
+
   // ─── Tool scoping ───────────────────────────────────────────────────────
   //
   // Some extensions register their tools ASYNCHRONOUSLY, long after the
@@ -954,8 +992,8 @@ export async function runAgent(
   //     `disallowedTools`) as `excludeTools`, which pi re-applies on every
   //     registry refresh;
   //   - enforce `ext:` narrowing on the ACTIVE set via the live `inScope()`
-  //     predicate installed after bind — the active set is what the LLM sees,
-  //     so a registry tool that is never activated is invisible and uncallable.
+  //     predicate installed after bind, and on codemode's callable catalog and
+  //     nested calls (deferred tools can be callable without being active).
   //
   // `noExtensions`/`isolated` keeps the historical static allowlist: nothing
   // async can appear there, and a hard registry gate is the correct boundary.
@@ -1077,14 +1115,7 @@ export async function runAgent(
   // handled below by re-deriving scope from the loader's live extension maps —
   // `registerTool` writes into those same maps, so late arrivals are judged too.
   if (!noExtensions) {
-    installExtensionToolScope(session, {
-      loader,
-      toolNames,
-      disallowedSet,
-      extNames,
-      narrowing,
-      readmitToolNames,
-    });
+    installExtensionToolScope(session, inScope);
   }
 
   options.onSessionCreated?.(session);

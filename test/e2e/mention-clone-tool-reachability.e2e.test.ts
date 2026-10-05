@@ -29,6 +29,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fauxAssistantMessage, fauxText, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Real pi-mono session construction; a cold first run under full-suite CPU
@@ -69,6 +71,33 @@ describe("mention clone tool reachability against real pi-mono", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("carries the main conversation and live prompt into the real model request", async () => {
+    const model = faux.getModel();
+    const backend = fauxModelBackend(model);
+    const sessionManager = SessionManager.inMemory(cwd);
+    sessionManager.appendMessage({ role: "user", content: "PRIOR_CONVERSATION_MARKER", timestamp: 1 });
+    let observed = "";
+    let systemPrompt = "";
+    faux.setResponses([(context) => {
+      observed = JSON.stringify(context.messages);
+      systemPrompt = getCurrentSystemPrompt(context.messages);
+      return fauxAssistantMessage([fauxText("done")]);
+    }]);
+    const ctx = {
+      cwd, model, sessionManager, getSystemPrompt: () => "LIVE_PROMPT_MARKER",
+      modelRegistry: { ...backend.modelRegistry, runtime: backend.modelRuntime },
+    };
+    const result = await runMentionClone({
+      ctx: ctx as unknown as ExtensionContext, type: "Explore", message: "go",
+      agentTool: {
+        name: "Agent", label: "Agent", description: "Test",
+        parameters: { type: "object", properties: {} }, execute: vi.fn(),
+      },
+    });
+    expect(observed, JSON.stringify(result)).toContain("PRIOR_CONVERSATION_MARKER");
+    expect(systemPrompt).toContain("LIVE_PROMPT_MARKER");
+  });
+
   it("the clone's Agent tool is live on the real session, and it is the only one", async () => {
     const model = faux.getModel();
     const backend = fauxModelBackend(model);
@@ -79,7 +108,7 @@ describe("mention clone tool reachability against real pi-mono", () => {
       // mention-clone reads the runtime off the registry facade, the same shim
       // agent-runner carries for Pi >= 0.80.8.
       modelRegistry: { ...backend.modelRegistry, runtime: backend.modelRuntime },
-      sessionManager: { getEntries: () => [], getLeafId: () => undefined },
+      sessionManager: { getBranch: () => [] },
     };
 
     // Never called: the assertion is on what the session exposes, not on the

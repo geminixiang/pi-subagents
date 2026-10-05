@@ -17,8 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted: vi.mock's factory is lifted above the imports, so it cannot close
 // over ordinary top-level consts.
-const { buildSessionContext, createAgentSession, inMemory } = vi.hoisted(() => ({
-  buildSessionContext: vi.fn(),
+const { createAgentSession, inMemory } = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   inMemory: vi.fn(),
 }));
@@ -27,7 +26,6 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
   const actual = await vi.importActual<any>("@earendil-works/pi-coding-agent");
   return {
     ...actual,
-    buildSessionContext,
     createAgentSession,
     SessionManager: { ...actual.SessionManager, inMemory },
   };
@@ -45,9 +43,7 @@ const CONVERSATION = [
 beforeEach(() => {
   createAgentSession.mockReset();
   inMemory.mockReset();
-  inMemory.mockReturnValue({ kind: "in-memory-session-manager" } as any);
-  buildSessionContext.mockReset();
-  buildSessionContext.mockReturnValue({ messages: CONVERSATION, thinkingLevel: "high", model: null } as any);
+  inMemory.mockImplementation((_cwd, _options, entries) => ({ kind: "in-memory-session-manager", entries }));
 });
 
 /** The main session's context — the one the spawn must be attributed to. */
@@ -59,8 +55,7 @@ function mainCtx(overrides: Record<string, unknown> = {}) {
     modelRegistry: { runtime: { kind: "runtime" } },
     getSystemPrompt: vi.fn(() => "the live system prompt"),
     sessionManager: {
-      getEntries: vi.fn(() => [{ type: "message" }] as any[]),
-      getLeafId: vi.fn(() => "leaf-1"),
+      getBranch: vi.fn(() => CONVERSATION.map((message) => ({ type: "message", message }))),
     },
     ...overrides,
   } as any;
@@ -105,6 +100,8 @@ function cloneSession(turn?: (tool: any) => Promise<void> | void) {
   } as any;
   createAgentSession.mockImplementation(async (opts: any) => {
     const tools = visibleTools(opts);
+    session.agent.state.systemPrompt = opts.resourceLoader.getSystemPrompt() ?? "rebuilt-from-cwd";
+    session.agent.state.messages = opts.sessionManager.entries.map((entry: { message: unknown }) => entry.message);
     session.prompt.mockImplementation(async () => {
       // No tool, no tool call: the model can only answer in prose.
       if (tools.length === 0) return;
@@ -152,8 +149,8 @@ describe("cloning the conversation", () => {
 
     await runMentionClone(o);
 
-    expect(buildSessionContext).toHaveBeenCalledWith([{ type: "message" }], "leaf-1");
-    expect(createAgentSession.mock.calls[0][0].sessionManager).toEqual({
+    expect(inMemory).toHaveBeenCalledWith("/repo", undefined, o.ctx.sessionManager.getBranch());
+    expect(createAgentSession.mock.calls[0][0].sessionManager).toMatchObject({
       kind: "in-memory-session-manager",
     });
   });
@@ -172,7 +169,6 @@ describe("cloning the conversation", () => {
     // "off". Passing that would silently think less than the user asked for;
     // omitting it lets createAgentSession resolve the real level from settings.
     // Also the Pi <0.82.0 path, where ctx has no thinkingLevel at all.
-    buildSessionContext.mockReturnValue({ messages: CONVERSATION, thinkingLevel: "off", model: null } as any);
     const o = opts({ ctx: mainCtx({ thinkingLevel: undefined }) });
     cloneSession(callsAgent());
 
@@ -185,8 +181,7 @@ describe("cloning the conversation", () => {
     // First input of a fresh session. There is no history to carry, which is an
     // answer and not a failure — the copy still runs on the main model and
     // system prompt, and still makes the call.
-    buildSessionContext.mockReturnValue({ messages: [], thinkingLevel: "medium", model: null } as any);
-    const o = opts();
+    const o = opts({ ctx: mainCtx({ sessionManager: { getBranch: () => [] } }) });
     const session = cloneSession(callsAgent());
 
     const result = await runMentionClone(o);
@@ -270,7 +265,7 @@ describe("attributing the spawn to the real session", () => {
     await runMentionClone(o);
 
     expect(tool.execute).toHaveBeenCalledTimes(1);
-    expect(tool.execute.mock.calls[0][4]).toBe(o.ctx);
+    expect(tool.execute.mock.calls[0][4]).toMatchObject(o.ctx);
   });
 
   it("passes no tool-call id, since the real session issued none", async () => {

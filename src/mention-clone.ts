@@ -18,9 +18,9 @@
  * Cloned from memory rather than from the session file, which cannot be relied
  * on: `SessionManager._persist` withholds every write until the first assistant
  * message lands, so a fork taken before then reads an empty file and throws.
- * `buildSessionContext()` has no such timing, and is compaction-aware — it walks
- * the leaf path and substitutes the summary for entries folded into it, so a
- * long conversation clones as what the main model is actually working from. A
+ * Seeding an in-memory SessionManager from the active branch has no such timing
+ * and preserves compaction and branch summaries, so a long conversation clones
+ * as what the main model is actually working from. A
  * conversation with nothing in it yet clones to nothing in it yet, which is the
  * correct answer rather than a failure.
  *
@@ -63,9 +63,10 @@
 
 import type { Model } from "@earendil-works/pi-ai";
 import {
-  buildSessionContext,
   createAgentSession,
+  DefaultResourceLoader,
   type ExtensionContext,
+  getAgentDir,
   SessionManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -103,7 +104,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
   let spawned = false;
   const cloneAgentTool: ToolDefinition = {
     ...agentTool,
-    execute: (_cloneToolCallId, params, signal, onUpdate, _cloneCtx) => {
+    execute: (_cloneToolCallId, params, signal, onUpdate, cloneCtx) => {
       // One spawn per mention. The clone has a single tool and every reason to
       // stop after using it, but a model that decides to "also" launch a second
       // agent would do it where nobody can see and nobody asked.
@@ -125,7 +126,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
         { ...(params as Record<string, unknown>), run_in_background: true } as typeof params,
         signal,
         onUpdate,
-        ctx,
+        { ...ctx, tools: cloneCtx.tools, executeTool: cloneCtx.executeTool },
       );
     },
   };
@@ -136,22 +137,31 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
     // agent-runner.ts carries the same shim for the same reason — pass both so
     // the clone keeps the parent's providers across the supported range.
     const parentModelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
-    // The conversation as the main session resolves it: compaction applied,
-    // branch summaries substituted.
-    const conversation = buildSessionContext(
-      ctx.sessionManager.getEntries(),
-      ctx.sessionManager.getLeafId(),
-    );
+    // Pi rebuilds model context from this manager, not agent.state.messages.
+    // Copy only the active branch, preserving compaction and branch summaries.
+    const sessionManager = SessionManager.inMemory(ctx.cwd, undefined, ctx.sessionManager.getBranch());
     // Pi 0.82.0 added this; below it the field is absent and the clone takes
     // the settings level instead, which is what a session that never ran
     // `/think` is on anyway. Same shim shape as `modelRuntime` below.
     const thinkingLevel = (ctx as { thinkingLevel?: ThinkingLevel }).thinkingLevel;
+    // The live prompt is supplied through the resource loader; Pi's effective
+    // system prompt is read-only and is rebuilt from these options each turn.
+    const systemPrompt = ctx.getSystemPrompt();
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: ctx.cwd,
+      agentDir: getAgentDir(),
+      systemPromptOverride: systemPrompt ? () => systemPrompt : undefined,
+      noContextFiles: !!systemPrompt,
+      appendSystemPromptOverride: systemPrompt ? () => [] : undefined,
+    });
+    await runInChildSessionContext(() => resourceLoader.reload());
     const created = await runInChildSessionContext(() =>
       createAgentSession({
+        resourceLoader,
         cwd: ctx.cwd,
         // Nothing about the copy is worth persisting, and an in-memory manager
         // is also what keeps the real session untouched.
-        sessionManager: SessionManager.inMemory(ctx.cwd),
+        sessionManager,
         model: ctx.model as Model<never> | undefined,
         ...(thinkingLevel && { thinkingLevel }),
         modelRegistry: ctx.modelRegistry,
@@ -169,17 +179,6 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
       } as Parameters<typeof createAgentSession>[0]),
     );
     session = created.session;
-
-    // The clone rebuilds a system prompt from cwd and agentDir, which is close
-    // but not the live one — extensions contribute to it per turn. Copy the
-    // real thing, so the copy reasons under the instructions the user's model
-    // is actually working under.
-    const systemPrompt = ctx.getSystemPrompt?.();
-    if (systemPrompt) session.agent.state.systemPrompt = systemPrompt;
-
-    // The conversation itself. Pushed rather than assigned so the array the
-    // session was built around stays the one it goes on using.
-    session.agent.state.messages.push(...conversation.messages);
 
     // User text first, reminder after — the order Claude Code's attachment
     // renderer produces, where the reminder trails the message it is about.

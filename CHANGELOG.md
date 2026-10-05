@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **BREAKING: Every subagent now receives pi's `codemode` tool; pi 0.99.0+ is required.** Upgrade pi before updating this extension. Codemode accompanies existing tools even for restricted custom agents, `extensions: none`, and isolated sessions; scripts respect the child's tool scope and cannot call parent orchestration tools. Set `disallowed_tools: codemode` to disable it.
 - **`typebox` is now a host-provided peer dependency.** Extensions import the host `typebox` package instead of installing `@sinclair/typebox` or `typebox`, avoiding duplicate runtime modules and pi's extension package warning.
 - **Running-agent widgets show recent public activity.** A dedicated model line shows canonical `provider/model:thinking` by default; explicit Show model off is respected. Context usage is labeled, and up to five chronological assistant-text/tool summaries show correlated running, success, or error status on fresh runs and resumes. Busy fleets reduce histories with omission counts to stay within the existing height cap.
 
